@@ -23,10 +23,10 @@ drop = re.compile(drop)
 pv_str = "p[^a-zA-Z]{0,4}val"
 pv = re.compile(pv_str)
 adj = re.compile("adj|fdr|corr|thresh|q[^a-zA-Z]{0,4}val")
-fc = re.compile("(l(og)?([0-9])?((\()?f(old)?(_)?c|ratio)|^fc$)")
+fc = re.compile("(l(og)?([0-9])?((\\()?f(old)?(_)?c|ratio)|^fc$)")
 ws = re.compile(" ")
-mtabs = re.compile("\w+\t{2,}\w+")
-tab = re.compile("\t")
+mtabs = re.compile("\\w+\\t{2,}\\w+")
+tab = re.compile("\\t")
 fields = ["es_var", "es_val", "pv_var", "pv_val", "adjpv_var", "adjpv_val", "note"]
 PValSum = collections.namedtuple("PValSum", fields, defaults=[np.nan] * len(fields))
 peak = re.compile("(narrow|broad|gapped)peak")
@@ -122,9 +122,9 @@ class ImportSuppfiles(object):
             sep = r._engine.data.dialect.delimiter
             columns = r._engine.columns
         if ws.search(sep):
-            sep = "\s+"
+            sep = "\\s+"
         if mtabs.search(first_line):
-            sep = "\t+"
+            sep = "\\t+"
         # Import file
         if isinstance(input, (tarfile.ExFileObject)) and input_name.endswith("gz"):
             with gzip.open(input) as h:
@@ -283,7 +283,7 @@ def check_extra_delim(df, delim, func):
 def parse_table(df):
 
     # Drop columns with numeric column names
-    df = df.filter(regex="^\D")
+    df = df.filter(regex="^\\D")
     # Drop columns with NaN column names
     df = df.loc[:, df.columns.notnull()]
     df.columns = map(str.lower, df.columns)
