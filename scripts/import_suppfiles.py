@@ -1,3 +1,5 @@
+import numbers
+import warnings
 import os
 import re
 import gzip
@@ -8,8 +10,6 @@ import argparse
 import pandas as pd
 import numpy as np
 from pandas.api.types import is_string_dtype
-import numbers
-import warnings
 
 
 class FormatError(Exception):
@@ -417,5 +417,5 @@ if __name__ == "__main__":
 
     df = parse_suppfiles(**args.__dict__)
 
-    with open(args.out, "w") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         df.reset_index(level="id").to_csv(f, index=False)
