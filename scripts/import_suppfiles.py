@@ -231,7 +231,7 @@ def get_adj_pvalues(i):
 
 
 def get_fc(i):
-    il=i.lower() 
+    il = i.lower()
     return bool(fc.search(il) and not re.search("lfcse", il))
 
 
@@ -270,14 +270,14 @@ def split_extra_delim(df, cols, delim, func):
                 df.drop(col, axis=1, inplace=True)
             except ValueError:
                 pass
-    return(df)
-    
+    return df
+
 
 def check_extra_delim(df, delim, func):
     split_cols = [i for i in df.columns if delim in i]
     if split_cols:
-        df = split_extra_delim(df, cols = split_cols, delim = delim, func=func)
-    return(df)
+        df = split_extra_delim(df, cols=split_cols, delim=delim, func=func)
+    return df
 
 
 def parse_table(df):
@@ -291,23 +291,26 @@ def parse_table(df):
     adj_cols = [i for i in df.columns if get_adj_pvalues(i)]
     fc_cols = [i for i in df.columns if get_fc(i)]
     # some outputs have both fold change (fc) and log fold change columns, let's keep only logFC
-    fold_changes=[i for i in fc_cols if re.search("^fc|(?<!l)fc$", i)]
-    if fold_changes and len(fold_changes)<len(fc_cols):
-        fc_cols=[i for i in fc_cols if i not in fold_changes]
+    fold_changes = [i for i in fc_cols if re.search("^fc|(?<!l)fc$", i)]
+    if fold_changes and len(fold_changes) < len(fc_cols):
+        fc_cols = [i for i in fc_cols if i not in fold_changes]
     pvalues = df[pval_cols].copy()
     adjpval = df[adj_cols].copy()
     fcval = df[fc_cols].copy()
     # Check if there is ANOTHER(!!#?) level of ":" delimiters in p value column(s)
-    pvalues = check_extra_delim(pvalues, delim = ":", func=get_pvalues)
-    adjpval = check_extra_delim(adjpval, delim = ":", func=get_adj_pvalues)
-    fcval = check_extra_delim(fcval, delim = ":", func=get_fc)
+    pvalues = check_extra_delim(pvalues, delim=":", func=get_pvalues)
+    adjpval = check_extra_delim(adjpval, delim=":", func=get_adj_pvalues)
+    fcval = check_extra_delim(fcval, delim=":", func=get_fc)
     # fix data type
     pvalues_check = fix_column_dtype(pvalues)
     adjpval_check = fix_column_dtype(adjpval)
     fcval_check = fix_column_dtype(fcval)
-    merged=fcval_check.melt(var_name="es_var", value_name="es_val").join(pvalues_check.melt(var_name="pv_var", value_name="pv_val")).join(adjpval_check.melt(var_name="adjpv_var", value_name="adjpv_val"))
+    merged = (
+        fcval_check.melt(var_name="es_var", value_name="es_val")
+        .join(pvalues_check.melt(var_name="pv_var", value_name="pv_val"))
+        .join(adjpval_check.melt(var_name="adjpv_var", value_name="adjpv_val"))
+    )
     return merged
-
 
 
 def note(filename, message):
