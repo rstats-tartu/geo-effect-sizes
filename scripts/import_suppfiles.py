@@ -18,7 +18,7 @@ class FormatError(Exception):
 
 
 xls = re.compile("xls")
-drop = "series_matrix\.txt\.gz$|filelist\.txt$|readme|\.bam(\.tdf|$)|\.bai(\.gz|$)|\.sam(\.gz|$)|\.csfasta|\.fa(sta)?(\.gz|\.bz2|\.txt\.gz|$)|\.f(a|n)a(\.gz|$)|\.wig|\.big[Ww]ig$|\.bw(\.|$)|\.bed([Gg]raph)?(\.tdf|\.gz|\.bz2|\.txt\.gz|$)|(broad_)?lincs|\.tdf$|\.hic$|\.rds(\.gz|$)|\.tar\.gz$|\.mtx(\.gz$|$)|dge\.txt\.gz$|umis?\.txt\.gz$"
+drop = "series_matrix\\.txt\\.gz$|filelist\\.txt$|readme|\\.bam(\\.tdf|$)|\\.bai(\\.gz|$)|\\.sam(\\.gz|$)|\\.csfasta|\\.fa(sta)?(\\.gz|\\.bz2|\\.txt\\.gz|$)|\\.f(a|n)a(\\.gz|$)|\\.wig|\\.big[Ww]ig$|\\.bw(\\.|$)|\\.bed([Gg]raph)?(\\.tdf|\\.gz|\\.bz2|\\.txt\\.gz|$)|(broad_)?lincs|\\.tdf$|\\.hic$|\\.rds(\\.gz|$)|\\.tar\\.gz$|\\.mtx(\\.gz$|$)|dge\\.txt\\.gz$|umis?\\.txt\\.gz$"
 drop = re.compile(drop)
 pv_str = "p[^a-zA-Z]{0,4}val"
 pv = re.compile(pv_str)
