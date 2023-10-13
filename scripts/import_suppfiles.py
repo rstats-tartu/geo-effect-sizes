@@ -7,7 +7,6 @@ import collections
 import argparse
 import pandas as pd
 import numpy as np
-from scipy.stats import binom
 from pandas.api.types import is_string_dtype
 import numbers
 import warnings
