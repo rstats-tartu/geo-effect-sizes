@@ -235,14 +235,6 @@ def get_fc(i):
     return bool(fc.search(il) and not re.search("lfcse", il))
 
 
-def filter_pvalue_tables(input, pv=None, adj=None):
-    return {
-        k: v
-        for k, v in input.items()
-        if any([get_pvalues(i) for i in v.columns if not isinstance(i, numbers.Number)])
-    }
-
-
 def fix_column_dtype(df):
     for col in df.columns:
         s = df[col]
