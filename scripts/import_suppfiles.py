@@ -1,17 +1,14 @@
 import os
-import sys
 import re
 import gzip
 import tarfile
 import io
-import scipy
 import collections
 import argparse
 import pandas as pd
 import numpy as np
 from scipy.stats import binom
 from pandas.api.types import is_string_dtype
-from pathlib import Path
 import numbers
 import warnings
 
@@ -25,52 +22,13 @@ drop = "series_matrix\.txt\.gz$|filelist\.txt$|readme|\.bam(\.tdf|$)|\.bai(\.gz|
 drop = re.compile(drop)
 pv_str = "p[^a-zA-Z]{0,4}val"
 pv = re.compile(pv_str)
-adj = re.compile("adj|fdr|corr|thresh")
+adj = re.compile("adj|fdr|corr|thresh|q[^a-zA-Z]{0,4}val")
+fc = re.compile("(l(og)?([0-9])?((\()?f(old)?(_)?c|ratio)|^fc$)")
 ws = re.compile(" ")
 mtabs = re.compile("\w+\t{2,}\w+")
 tab = re.compile("\t")
-fields = ["Type", "Class", "Conversion", "pi0", "FDR_pval", "hist", "note"]
+fields = ["es_var", "es_val", "pv_var", "pv_val", "adjpv_var", "adjpv_val", "note"]
 PValSum = collections.namedtuple("PValSum", fields, defaults=[np.nan] * len(fields))
-narrowpeak = [
-    "chrom",
-    "chromStart",
-    "chromEnd",
-    "name",
-    "score",
-    "strand",
-    "signalValue",
-    "pValue",
-    "qValue",
-    "peak",
-]  # BED6+4
-broadpeak = [
-    "chrom",
-    "chromStart",
-    "chromEnd",
-    "name",
-    "score",
-    "strand",
-    "signalValue",
-    "pValue",
-    "qValue",
-]  # BED6+3
-gappedpeak = [
-    "chrom",
-    "chromStart",
-    "chromEnd",
-    "name",
-    "score",
-    "strand",
-    "thickStart",
-    "thickEnd",
-    "itemRgb",
-    "blockCount",
-    "blockSizes",
-    "blockStarts",
-    "signalValue",
-    "pValue",
-    "qValue",
-]  # BED12+3
 peak = re.compile("(narrow|broad|gapped)peak")
 
 
@@ -264,15 +222,24 @@ class ImportSuppfiles(object):
         return out
 
 
-def raw_pvalues(i):
-    return bool(pv.search(i.lower()) and not adj.search(i.lower()))
+def get_pvalues(i):
+    return bool(pv.search(i.lower()))
+
+
+def get_adj_pvalues(i):
+    return bool(adj.search(i.lower()))
+
+
+def get_fc(i):
+    il=i.lower() 
+    return bool(fc.search(il) and not re.search("lfcse", il))
 
 
 def filter_pvalue_tables(input, pv=None, adj=None):
     return {
         k: v
         for k, v in input.items()
-        if any([raw_pvalues(i) for i in v.columns if not isinstance(i, numbers.Number)])
+        if any([get_pvalues(i) for i in v.columns if not isinstance(i, numbers.Number)])
     }
 
 
@@ -286,318 +253,61 @@ def fix_column_dtype(df):
     return df
 
 
-def summarise_pvalue_tables(
-    df, var=["basemean", "value", "fpkm", "logcpm", "rpkm", "aveexpr"]
-):
+def split_extra_delim(df, cols, delim, func):
+    # Check if there is ANOTHER(fucking!!#?) level of ":" delimiters in column names
+    for index, col in enumerate(cols):
+        col_count = len(re.findall(delim, col))
+        obs_count = len(re.findall(delim, str(df.iloc[0, index])))
+        if obs_count == 0:
+            pass
+        elif col_count == obs_count:
+            new_cols = col.split(delim)
+            split_pval_col = [i for i in new_cols if func(i)]
+            cols_split = df.iloc[:, index].str.split(delim, expand=True)
+            try:
+                cols_split.columns = new_cols
+                df[split_pval_col] = cols_split[split_pval_col]
+                df.drop(col, axis=1, inplace=True)
+            except ValueError:
+                pass
+    return(df)
+    
+
+def check_extra_delim(df, delim, func):
+    split_cols = [i for i in df.columns if delim in i]
+    if split_cols:
+        df = split_extra_delim(df, cols = split_cols, delim = delim, func=func)
+    return(df)
+
+
+def parse_table(df):
+
     # Drop columns with numeric column names
     df = df.filter(regex="^\D")
     # Drop columns with NaN column names
     df = df.loc[:, df.columns.notnull()]
     df.columns = map(str.lower, df.columns)
-    pval_cols = [i for i in df.columns if raw_pvalues(i)]
+    pval_cols = [i for i in df.columns if get_pvalues(i)]
+    adj_cols = [i for i in df.columns if get_adj_pvalues(i)]
+    fc_cols = [i for i in df.columns if get_fc(i)]
+    # some outputs have both fold change (fc) and log fold change columns, let's keep only logFC
+    fold_changes=[i for i in fc_cols if re.search("^fc|(?<!l)fc$", i)]
+    if fold_changes and len(fold_changes)<len(fc_cols):
+        fc_cols=[i for i in fc_cols if i not in fold_changes]
     pvalues = df[pval_cols].copy()
+    adjpval = df[adj_cols].copy()
+    fcval = df[fc_cols].copy()
     # Check if there is ANOTHER(!!#?) level of ":" delimiters in p value column(s)
-    extra_delim = ":"
-    split_col = [i for i in pvalues.columns if extra_delim in i]
-    if split_col:
-        for index, col in enumerate(split_col):
-            col_count = len(re.findall(extra_delim, col))
-            obs_count = len(re.findall(extra_delim, str(pvalues.iloc[0, index])))
-            if obs_count == 0:
-                pass
-            elif col_count == obs_count:
-                new_cols = col.split(extra_delim)
-                split_pval_col = [i for i in new_cols if raw_pvalues(i)]
-                cols_split = pvalues.iloc[:, index].str.split(extra_delim, expand=True)
-                try:
-                    cols_split.columns = new_cols
-                    pvalues[split_pval_col] = cols_split[split_pval_col]
-                    pvalues.drop(col, axis=1, inplace=True)
-                except ValueError:
-                    pass
-        pval_cols = [i for i in pvalues.columns if raw_pvalues(i)]
+    pvalues = check_extra_delim(pvalues, delim = ":", func=get_pvalues)
+    adjpval = check_extra_delim(adjpval, delim = ":", func=get_adj_pvalues)
+    fcval = check_extra_delim(fcval, delim = ":", func=get_fc)
+    # fix data type
     pvalues_check = fix_column_dtype(pvalues)
-    for v in var:
-        label = v
-        if v == "value":
-            v = "^value_\d"
-            label = "fpkm"
-        exprs = df.filter(regex=v, axis=1)
-        if not exprs.empty:
-            exprs_check = fix_column_dtype(exprs)
-            exprs_sum = exprs_check.mean(axis=1, skipna=True)
-            pvalues_check.loc[:, label] = exprs_sum
-            break
-    pv_stacked = (
-        pvalues_check.melt(id_vars=list(set(pvalues_check.columns) - set(pval_cols)))
-        .set_index("variable")
-        .rename(columns={"value": "pvalue"})
-    )
-    return pv_stacked.dropna()
+    adjpval_check = fix_column_dtype(adjpval)
+    fcval_check = fix_column_dtype(fcval)
+    merged=fcval_check.melt(var_name="es_var", value_name="es_val").join(pvalues_check.melt(var_name="pv_var", value_name="pv_val")).join(adjpval_check.melt(var_name="adjpv_var", value_name="adjpv_val"))
+    return merged
 
-
-# https://stackoverflow.com/a/32681075/1657871
-def rle(inarray):
-    """run length encoding. Partial credit to R rle function.
-    Multi datatype arrays catered for including non Numpy
-    returns: tuple (runlengths, startpositions, values)"""
-    ia = np.asarray(inarray)  # force numpy
-    n = len(ia)
-    if n == 0:
-        return (None, None, None)
-    else:
-        y = np.array(ia[1:] != ia[:-1])  # pairwise unequal (string safe)
-        i = np.append(np.where(y), n - 1)  # must include last element posi
-        z = np.diff(np.append(-1, i))  # run lengths
-        p = np.cumsum(np.append(0, z))[:-1]  # positions
-        return (z, p, ia[i])
-
-
-def get_hist_class(counts, fdr):
-    bins = len(counts)
-    qc = binom.ppf(1 - 1 / bins * fdr, sum(counts), 1 / bins)
-    counts_over_qc = counts > qc
-    ru = rle(counts_over_qc)
-    over_qc = ru[1][ru[2]]
-    rufl = rle(np.flip(counts_over_qc))
-    over_qc_fl = rufl[1][rufl[2]]
-    if all(~counts_over_qc):
-        Class = "uniform"
-    elif len(over_qc) == 1:
-        over_qc_prop = ru[0][ru[2]] / bins
-        if over_qc == 0 and over_qc_prop < 1 / 3:
-            Class = "anti-conservative"
-        elif over_qc_fl == 0:
-            Class = "conservative"
-        else:
-            Class = "other"
-    elif len(over_qc) == 2:
-        if over_qc[0] == 0 and over_qc_fl[0] == 0:
-            Class = "bimodal"
-        else:
-            Class = "other"
-    else:
-        Class = "other"
-    return Class
-
-
-# from https://stackoverflow.com/a/33532498
-def p_adjust_bh(p):
-    """Benjamini-Hochberg p-value correction for multiple hypothesis testing."""
-    p = np.asfarray(p)
-    by_descend = p.argsort()[::-1]
-    by_orig = by_descend.argsort()
-    steps = float(len(p)) / np.arange(len(p), 0, -1)
-    q = np.minimum(1, np.minimum.accumulate(steps * p[by_descend]))
-    return q[by_orig]
-
-
-# https://gdsctools.readthedocs.io/en/master/_modules/gdsctools/qvalue.html#QValue
-def estimate_pi0(
-    pv,
-    lambdas=None,
-    pi0=None,
-    df=3,
-    method="smoother",
-    smooth_log_pi0=False,
-    verbose=True,
-):
-    """Estimate pi0 based on the pvalues"""
-    try:
-        pv = np.array(pv)
-    except:
-        pv = pv.copy()
-    assert pv.min() >= 0 and pv.max() <= 1, "p-values should be between 0 and 1"
-    if lambdas is None:
-        epsilon = 1e-8
-        lambdas = np.arange(0, 0.9 + 1e-8, 0.05)
-    if len(lambdas) > 1 and len(lambdas) < 4:
-        raise ValueError(
-            """if length of lambda greater than 1, you need at least 4 values"""
-        )
-    if len(lambdas) >= 1 and (min(lambdas) < 0 or max(lambdas) >= 1):
-        raise ValueError("lambdas must be in the range[0, 1[")
-    m = float(len(pv))
-
-    pv = pv.ravel()  # flatten array
-    if pi0 is not None:
-        pass
-    elif len(lambdas) == 1:
-        pi0 = np.mean(pv >= lambdas[0]) / (1 - lambdas[0])
-        pi0 = min(pi0, 1)
-    else:
-        # evaluate pi0 for different lambdas
-        pi0 = [np.mean(pv >= this) / (1 - this) for this in lambdas]
-        # in R
-        # lambda = seq(0,0.09, 0.1)
-        # pi0 = c(1.0000000, 0.9759067, 0.9674164, 0.9622673, 0.9573241,
-        #         0.9573241 0.9558824, 0.9573241, 0.9544406, 0.9457901)
-        # spi0 = smooth.spline(lambda, pi0, df=3, all.knots=F, spar=0)
-        # predict(spi0, x=max(lambda))$y  --> 0.9457946
-        # spi0 = smooth.spline(lambda, pi0, df=3, all.knots=F)
-        # predict(spi0, x=max(lambda))$y  --> 0.9485383
-        # In this function, using pi0 and lambdas, we get 0.9457946
-        # this is not too bad, the difference on the v17 data set
-        # is about 0.3 %
-        if method == "smoother":
-            if smooth_log_pi0:
-                pi0 = np.log(pi0)
-            # In R, the interpolation is done with smooth.spline
-            # within qvalue. However this is done with default
-            # parameters, and this is different from the Python
-            # code. Note, however, that smooth.spline has a parameter
-            # called spar. If set to 0, then we would get the same
-            # as in scipy. It looks like scipy has no equivalent of
-            # the smooth.spline function in R if spar is not 0
-            tck = scipy.interpolate.splrep(lambdas, pi0, k=df)
-            pi0 = scipy.interpolate.splev(lambdas[-1], tck)
-            if smooth_log_pi0:
-                pi0 = np.exp(pi0)
-            pi0 = min(pi0, 1.0)
-        elif method == "lfdr":
-            """Estimate proportion of null p-values
-            by average local FDR
-            Belinda Phipson and Gordon Smyth
-            23 May 2012. Last revised 30 July 2012."""
-            n = len(pv)
-            i = np.array(list(range(1, n + 1)))
-            i.sort()
-            i = i[::-1]
-            pv.sort()
-            pv = pv[::-1]
-            q = [min(i, 1) for i in n / np.array(i) * np.array(pv)]
-            n1 = n + 1
-            pi0 = sum(np.array(i) * q) / n / n1 * 2
-        elif method == "bootstrap":
-            raise NotImplementedError
-            """minpi0 = min(pi0)
-            mse = rep(0, len(lambdas))
-            pi0.boot = rep(0, len(lambdas))
-            for i in range(1,100):
-                p.boot = sample(p, size = m, replace = TRUE)
-                for i in range(0,len(lambdas)):
-                    pi0.boot[i] <- mean(p.boot > lambdas[i])/(1 - lambdas[i])
-                mse = mse + (pi0.boot - minpi0)^2
-            pi0 = min(pi0[mse == min(mse)])
-            pi0 = min(pi0, 1)"""
-        if pi0 > 1:
-            if verbose:
-                print("got pi0 > 1 (%.3f), setting it to 1" % pi0)
-            pi0 = 1.0
-    assert pi0 >= 0 and pi0 <= 1, "pi0 is not between 0 and 1: %f" % pi0
-    return pi0
-
-
-def conversion(x, y):
-    classes = pd.DataFrame.from_dict(
-        {
-            "uniform": ["same good", "improve, effects", "worsen", "worsen", "worsen"],
-            "anti-conservative": [
-                "effects lost",
-                "same good",
-                "worsen",
-                "worsen",
-                "worsen",
-            ],
-            "conservative": [
-                "improvement; no effects",
-                "improvement; effects",
-                "same bad",
-                "no improvement",
-                "no improvement",
-            ],
-            "other": [
-                "improvement; no effects",
-                "improvement; effects",
-                "no improvement",
-                "same bad",
-                "no improvement",
-            ],
-            "bimodal": [
-                "improvement; no effects",
-                "improvement; effects",
-                "no improvement",
-                "no improvement",
-                "same bad",
-            ],
-        },
-        orient="index",
-        columns=["uniform", "anti-conservative", "conservative", "other", "bimodal"],
-    )
-    return classes.loc[x, y]
-
-
-def summarise_pvalues(
-    df,
-    bins=30,
-    fdr=0.05,
-    var={
-        "basemean": 10,
-        "fpkm": 0.5,
-        "logcpm": np.log2(0.5),
-        "rpkm": 0.5,
-        "aveexpr": np.log2(10),
-    },
-    pi0_method="lfdr",
-    verbose=True,
-):
-    breaks = np.linspace(0, 1, bins)
-    center = (breaks[:-1] + breaks[1:]) / 2
-    out = {}
-    grouped = df.groupby(level=0)
-    for name, group in grouped:
-        # Test if pvalues are in 0 to 1 range
-        if group.min()["pvalue"] < 0 or group.max()["pvalue"] > 1:
-            out.update(note(name, "p-values not in 0 to 1 range"))
-            continue
-        # Filter pvalues
-        pf = pd.DataFrame()
-        for k, v in var.items():
-            if k in group.columns:
-                pf = group.loc[group[k] >= v, ["pvalue"]]
-                filt = k
-                break
-        # Make histogram
-        pv_sets = [i for i in [group, pf] if not i.empty]
-        hists = [np.histogram(i["pvalue"], bins=breaks) for i in pv_sets]
-        counts = [counts.tolist() for (counts, bins) in hists]
-        # Test if p-values are truncated
-        truncated = rle([i == 0 for i in counts[0]])[1][-1] > 0
-        if truncated:
-            out.update(note(name, "p-values truncated or right-skewed"))
-            continue
-        # Assign class to histograms
-        Class = [get_hist_class(i, fdr) for i in counts]
-        # Conversion
-        Type = ["raw"]
-        conv = np.nan
-        if len(Class) == 2:
-            conv = conversion(Class[0], Class[1])
-            Type = ["raw", filt]
-        # Calculate pi0
-        pi0 = []
-        for i, c in zip(pv_sets, Class):
-            if c in ["uniform", "anti-conservative"]:
-                pi0_est = estimate_pi0(i["pvalue"], method=pi0_method, verbose=verbose)
-                pi0.append(pi0_est)
-            else:
-                pi0.append(np.nan)
-        # Number of effects < FDR
-        fdr_effects = [sum(p_adjust_bh(i["pvalue"]) < fdr) for i in pv_sets]
-        out.update(
-            {
-                name: pd.DataFrame(
-                    PValSum(Type, Class, conv, pi0, fdr_effects, counts)._asdict()
-                )
-            }
-        )
-    return (
-        pd.concat(
-            [df for df in out.values()], keys=[k for k in out.keys()], names=["Set"]
-        )
-        .reset_index(level=["Set"])
-        .astype(dtype={"FDR_pval": "Int64"})
-    )
 
 
 def note(filename, message):
@@ -619,10 +329,6 @@ def parse_suppfiles(
     file=None,
     list=None,
     blacklist=None,
-    vars=["basemean=10", "fpkm=0.5", "logcpm=-0.3", "rpkm=0.5", "aveexpr=3.32"],
-    fdr=0.5,
-    pi0method="lfdr",
-    bins=30,
     verbose=False,
     **kwargs,
 ):
@@ -633,12 +339,6 @@ def parse_suppfiles(
     assert single_true(
         [file, list]
     ), "Provide either supplementary file name (file) or file with supplementary file names (list)."
-
-    var = dict(map(lambda s: s.split("="), vars))
-    VAR = {k: float(v) for k, v in var.items()}
-    VAR.update({"value": VAR["fpkm"]})
-    BINS = bins + 1
-    FDR = fdr
 
     if file:
         input = file
@@ -678,29 +378,14 @@ def parse_suppfiles(
         frames = {
             k: v
             if all(i in fields for i in v.columns)
-            else summarise_pvalue_tables(v, var=VAR.keys())
+            else parse_table(v)
             if any(
-                [raw_pvalues(i) for i in v.columns if not isinstance(i, numbers.Number)]
+                [get_pvalues(i) for i in v.columns if not isinstance(i, numbers.Number)]
             )
             else pd.DataFrame(PValSum(note="no pvalues")._asdict(), index=[0])
             for k, v in frames.out.items()
         }
-        pv_stats = {
-            k: v
-            if all(i in fields for i in v.columns)
-            else pd.DataFrame(PValSum(note="all p-values are NaN")._asdict(), index=[0])
-            if v.empty
-            else summarise_pvalues(
-                v,
-                bins=BINS,
-                fdr=FDR,
-                var={k: v for k, v in VAR.items() if "value" not in k},
-                pi0_method=pi0method,
-                verbose=verbose,
-            )
-            for k, v in frames.items()
-        }
-        for k, v in pv_stats.items():
+        for k, v in frames.items():
             res.update({parse_key(k, filename): v})
 
     result = pd.concat(
@@ -725,31 +410,6 @@ if __name__ == "__main__":
         help="file with paths to input files, one per line",
     )
     parser.add_argument("--out", metavar="FILE", help="output file", required=True)
-    parser.add_argument(
-        "--vars",
-        metavar="KEY=VALUE",
-        nargs="*",
-        default=["basemean=10", "fpkm=0.5", "logcpm=-0.3", "rpkm=0.5", "aveexpr=3.32"],
-        help="variables for expression level filtering. Input 'key=value' pairs without spaces around equation mark",
-    )
-    parser.add_argument(
-        "--bins",
-        type=int,
-        default=30,
-        help="number of histogram bins, integer, default is 30",
-    )
-    parser.add_argument(
-        "--fdr",
-        type=float,
-        default=0.05,
-        help="false discovery rate, float, default is 0.05",
-    )
-    parser.add_argument(
-        "--pi0method",
-        type=str,
-        default="lfdr",
-        help="method to calculate pi0, string, default is 'lfdr'",
-    )
     parser.add_argument(
         "--verbose", "-v", help="increase output verbosity", action="store_true"
     )
